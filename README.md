@@ -1,6 +1,6 @@
 <div align="center">
 
-# Windows OpenSSH Server · Ansible
+# Windows OpenSSH Server via Ansible
 
 **Hardened, auto-starting OpenSSH Server for Windows Server, on any port except 22, with least-privilege service accounts.**
 
