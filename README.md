@@ -597,5 +597,5 @@ ansible-project/
 Released under the **MIT License**. See [`LICENSE`](LICENSE) for the full text.
 
 <div align="center">
-<sub>Maintained by Byte Tech Solutions</sub>
+<sub>Maintained by Byte Tech Solutions Inc.</sub>
 </div>
