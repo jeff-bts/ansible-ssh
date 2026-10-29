@@ -1,0 +1,40 @@
+---
+- name: Disable vendor-provided OpenSSH firewall rules that open TCP/22
+  ansible.windows.win_powershell:
+    script: |
+      [CmdletBinding(SupportsShouldProcess)]
+      param([string]$ManagedRule)
+      $Ansible.Changed = $false
+      Get-NetFirewallRule -Direction Inbound -ErrorAction SilentlyContinue |
+        Where-Object {
+          ($_.Name -like 'OpenSSH*' -or $_.DisplayName -like '*OpenSSH*' -or $_.DisplayName -like '*sshd*') -and
+          $_.DisplayName -ne $ManagedRule -and
+          $_.Enabled -eq 'True'
+        } |
+        ForEach-Object {
+          if (@(($_ | Get-NetFirewallPortFilter).LocalPort) -contains '22') {
+            if ($PSCmdlet.ShouldProcess($_.DisplayName, 'Disable firewall rule')) { $_ | Disable-NetFirewallRule }
+            $Ansible.Changed = $true
+            $_.DisplayName
+          }
+        }
+    parameters:
+      ManagedRule: "{{ openssh_firewall_rule_name }}"
+  register: _openssh_fw_disabled
+  when: openssh_disable_default_port22_rule | bool
+
+- name: Allow inbound SSH on the custom port
+  community.windows.win_firewall_rule:
+    name: "{{ openssh_firewall_rule_name }}"
+    group: "{{ openssh_firewall_group }}"
+    description: "Inbound OpenSSH (sshd) on TCP/{{ openssh_port }}. Managed by Ansible."
+    localport: "{{ openssh_port }}"
+    protocol: tcp
+    direction: in
+    action: allow
+    # Bound to sshd.exe so the port can't be reused by another binary.
+    program: "{{ _openssh_bin_dir }}\\sshd.exe"
+    remoteip: "{{ openssh_firewall_remote_ips }}"
+    profiles: "{{ openssh_firewall_profiles }}"
+    enabled: true
+    state: present

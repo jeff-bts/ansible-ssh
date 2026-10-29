@@ -1,0 +1,35 @@
+---
+# Order matters:
+#  - firewall runs BEFORE sshd is ever started, so the vendor TCP/22 rule is
+#    disabled before the first (host-key generating) start.
+#  - accounts run before configure so the key file ACL can reference the SID.
+#  - config is staged + validated with `sshd -t` before it replaces the live
+#    file; service.yml rolls back automatically if sshd fails to come up.
+- name: Preflight checks
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [openssh, openssh_preflight]
+
+- name: Install OpenSSH Server
+  ansible.builtin.import_tasks: install.yml
+  tags: [openssh, openssh_install]
+
+- name: Configure SSH service account and access group
+  ansible.builtin.import_tasks: accounts.yml
+  tags: [openssh, openssh_accounts]
+
+- name: Configure Windows Firewall
+  ansible.builtin.import_tasks: firewall.yml
+  tags: [openssh, openssh_firewall]
+
+- name: Configure sshd
+  ansible.builtin.import_tasks: configure.yml
+  tags: [openssh, openssh_config]
+
+- name: Configure sshd service (autostart + rollback)
+  ansible.builtin.import_tasks: service.yml
+  tags: [openssh, openssh_service]
+
+- name: Verify
+  ansible.builtin.import_tasks: verify.yml
+  when: not ansible_check_mode
+  tags: [openssh, openssh_verify]

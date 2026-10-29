@@ -1,0 +1,77 @@
+---
+# -----------------------------------------------------------------------------
+# Method 1: Windows capability (Feature on Demand) - default
+# DISM / Windows Update calls are unreliable from a WinRM network logon, so
+# both calls run as SYSTEM (avoids "Access is denied" / 0x80070005).
+# -----------------------------------------------------------------------------
+- name: Install via Windows capability
+  when: openssh_install_method == 'capability'
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: SYSTEM
+  block:
+    - name: Query OpenSSH Server capability
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Pattern)
+          $Ansible.Changed = $false
+          $cap = Get-WindowsCapability -Online | Where-Object Name -like $Pattern | Select-Object -First 1
+          if (-not $cap) { throw "No Windows capability matches '$Pattern'." }
+          [PSCustomObject]@{ Name = $cap.Name; State = [string]$cap.State }
+        parameters:
+          Pattern: "{{ openssh_capability_pattern }}"
+      register: _openssh_capability
+      changed_when: false
+      check_mode: false
+
+    - name: Add OpenSSH Server capability
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name)
+          $r = Add-WindowsCapability -Online -Name $Name -ErrorAction Stop
+          [PSCustomObject]@{ RestartNeeded = [bool]$r.RestartNeeded }
+        parameters:
+          Name: "{{ _openssh_capability.output[0].Name }}"
+      register: _openssh_capability_add
+      when: _openssh_capability.output[0].State != 'Installed'
+
+    - name: Reboot if the capability install requires it
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+      become: false
+      when:
+        - _openssh_capability_add is changed
+        - _openssh_capability_add.output[0].RestartNeeded | default(false) | bool
+
+# -----------------------------------------------------------------------------
+# Method 2: Win32-OpenSSH MSI (offline / no Windows Update access)
+# -----------------------------------------------------------------------------
+- name: Install Win32-OpenSSH MSI (server component)
+  ansible.windows.win_package:
+    path: "{{ openssh_msi_url }}"
+    arguments: ADDLOCAL=Server
+    creates_path: "{{ openssh_bin_dir_msi }}\\sshd.exe"
+    state: present
+  when: openssh_install_method == 'msi'
+
+# -----------------------------------------------------------------------------
+# Common
+# -----------------------------------------------------------------------------
+- name: Resolve OpenSSH binary directory
+  ansible.builtin.set_fact:
+    _openssh_bin_dir: "{{ openssh_bin_dir_capability if openssh_install_method == 'capability' else openssh_bin_dir_msi }}"
+  tags: [always]
+
+- name: Confirm the sshd service is registered
+  ansible.windows.win_service:
+    name: sshd
+  register: _openssh_svc_info
+  failed_when: not _openssh_svc_info.exists and not ansible_check_mode
+  check_mode: false
+
+# Check mode can't simulate the install; stop cleanly instead of failing later.
+- name: End check-mode run on hosts without OpenSSH installed
+  ansible.builtin.meta: end_host
+  when:
+    - ansible_check_mode
+    - not _openssh_svc_info.exists

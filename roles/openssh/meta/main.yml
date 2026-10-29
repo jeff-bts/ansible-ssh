@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: openssh
+  author: Byte Tech Solutions
+  description: Install, harden and autostart OpenSSH Server on Windows Server on a non-22 port with a dedicated service account.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Windows
+      versions: [all]
+  galaxy_tags: [windows, openssh, ssh, hardening]
+
+dependencies: []

@@ -1,0 +1,15 @@
+---
+# 1. cp vault.yml.example vault.yml
+# 2. Edit the values below
+# 3. ansible-vault encrypt vault.yml
+# 4. Run playbooks with --ask-vault-pass (or --vault-password-file)
+#
+# Ansible WinRM service account, created by:
+#   scripts\Enable-WinRMForAnsible.ps1 -ServiceAccount svc_ansible
+# Domain account example: vault_ansible_user: "svc_ansible@CORP.EXAMPLE.COM"
+vault_ansible_user: svc_ansible
+vault_ansible_password: "ChangeMe-UseALongRandomPassword!1"
+
+# Local SSH service account password (type=local). It isn't used to log in
+# when password auth is off, but Windows requires one. Use 24+ random chars.
+vault_openssh_service_account_password: "ChangeMe-AnotherLongRandomPassword!2"

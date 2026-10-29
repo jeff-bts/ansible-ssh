@@ -1,0 +1,53 @@
+---
+# Restart + health check run inside a block. If sshd fails to come up with the
+# new config, the previous sshd_config is restored and sshd restarted, so the
+# host is never left without a working SSH daemon.
+- name: Apply sshd service settings with automatic rollback
+  block:
+    - name: Set sshd to start automatically at boot, with crash recovery
+      ansible.windows.win_service:
+        name: sshd
+        start_mode: "{{ openssh_service_start_mode }}"
+        state: started
+        failure_actions: "{{ openssh_service_failure_actions }}"
+        failure_reset_period_sec: "{{ openssh_service_failure_reset_sec }}"
+        failure_actions_on_non_crash_failure: true
+
+    - name: Restart sshd to load the new configuration
+      ansible.windows.win_service:
+        name: sshd
+        state: restarted
+      when: >-
+        (_openssh_config_promote | default({})) is changed or
+        (_openssh_config_preview | default({})) is changed or
+        (_openssh_banner | default({})) is changed
+
+    - name: Confirm sshd is listening on the configured port
+      ansible.windows.win_wait_for:
+        host: "{{ openssh_listen_addresses[0] | default('127.0.0.1') }}"
+        port: "{{ openssh_port | int }}"
+        timeout: 60
+      when: not ansible_check_mode
+
+  rescue:
+    - name: Restore the previous sshd_config
+      ansible.windows.win_copy:
+        src: "{{ _openssh_config_promote.backup_file }}"
+        dest: "{{ openssh_config_dir }}\\sshd_config"
+        remote_src: true
+      when: _openssh_config_promote.backup_file is defined
+
+    - name: Restart sshd with the previous configuration
+      ansible.windows.win_service:
+        name: sshd
+        state: restarted
+      failed_when: false
+
+    - name: Report the failed change
+      ansible.builtin.fail:
+        msg: >-
+          sshd did not come up with the new configuration
+          ({{ ansible_failed_result.msg | default('unknown error') }}).
+          {{ 'Previous config restored from ' ~ _openssh_config_promote.backup_file
+             if _openssh_config_promote.backup_file is defined else 'No backup was available.' }}
+          Check Event Viewer > Applications and Services Logs > OpenSSH > Operational.

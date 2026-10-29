@@ -1,0 +1,8 @@
+---
+# Install with:  ansible-galaxy collection install -r requirements.yml -p ./collections
+# Upper bounds keep runs reproducible; raise them deliberately after testing.
+collections:
+  - name: ansible.windows      # win_service, win_template, win_powershell, win_user, ...
+    version: ">=2.3.0,<4.0.0"
+  - name: community.windows    # win_firewall_rule
+    version: ">=2.2.0,<4.0.0"

@@ -1,0 +1,43 @@
+---
+- name: Identify the account Ansible is connected as
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+      [PSCustomObject]@{
+        Name           = $id.Name
+        Sid            = $id.User.Value
+        IsBuiltinAdmin = $id.User.Value -match '^S-1-5-21-[\d-]+-500$'
+      }
+  register: _winrm_service_account_identity
+  changed_when: false
+  check_mode: false
+
+- name: Refuse to run as the built-in Administrator
+  ansible.builtin.assert:
+    that: not (_winrm_service_account_identity.output[0].IsBuiltinAdmin | bool)
+    fail_msg: >-
+      Ansible is connected as the built-in Administrator
+      ({{ _winrm_service_account_identity.output[0].Name }}). Create the dedicated
+      service account with scripts/Enable-WinRMForAnsible.ps1 -ServiceAccount svc_ansible
+      and set vault_ansible_user accordingly.
+    quiet: true
+  when: winrm_service_account_forbid_builtin_admin | bool
+
+- name: Deny console logon for the Ansible service account
+  ansible.windows.win_user_right:
+    name: SeDenyInteractiveLogonRight
+    users: ["{{ _winrm_service_account_identity.output[0].Sid }}"]
+    action: add
+  when:
+    - winrm_service_account_deny_interactive_logon | bool
+    - not (_winrm_service_account_identity.output[0].IsBuiltinAdmin | bool)
+
+- name: Deny RDP logon for the Ansible service account
+  ansible.windows.win_user_right:
+    name: SeDenyRemoteInteractiveLogonRight
+    users: ["{{ _winrm_service_account_identity.output[0].Sid }}"]
+    action: add
+  when:
+    - winrm_service_account_deny_rdp_logon | bool
+    - not (_winrm_service_account_identity.output[0].IsBuiltinAdmin | bool)

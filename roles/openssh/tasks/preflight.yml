@@ -1,0 +1,137 @@
+---
+- name: Assert supported Windows version (Server 2019 / build 17763 or newer)
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == 'Windows'
+      - ansible_distribution_version is version('10.0.17763', '>=')
+    fail_msg: >-
+      OpenSSH Server requires Windows Server 2019 (10.0.17763) or newer.
+      Found: {{ ansible_distribution | default('unknown') }} {{ ansible_distribution_version | default('') }}
+    quiet: true
+
+- name: Assert SSH port is valid and is not 22
+  ansible.builtin.assert:
+    that:
+      - openssh_port | string is match('^[0-9]+$')
+      - openssh_port | int >= 1
+      - openssh_port | int <= 65535
+      - openssh_port | int != 22
+    fail_msg: "openssh_port must be an integer 1-65535 and must NOT be 22 (got '{{ openssh_port }}')."
+    quiet: true
+
+- name: Assert SSH port does not collide with reserved Windows service ports
+  ansible.builtin.assert:
+    that: openssh_port | int not in openssh_reserved_ports
+    fail_msg: "openssh_port {{ openssh_port }} is reserved ({{ openssh_reserved_ports | join(', ') }})."
+    quiet: true
+
+- name: Assert service account settings are complete
+  ansible.builtin.assert:
+    that:
+      - openssh_service_account_name | length > 0
+      - openssh_service_account_type != 'domain' or openssh_service_account_domain | length > 0
+      - openssh_service_account_type != 'local' or openssh_service_account_password | length > 0
+    fail_msg: >-
+      Set openssh_service_account_name; for type=domain also set
+      openssh_service_account_domain; for type=local set
+      openssh_service_account_password (via vault).
+    quiet: true
+
+# Lockout guard: with password auth off, at least one key must be deployed.
+- name: Assert the service account will be able to log in
+  ansible.builtin.assert:
+    that: >-
+      (openssh_password_authentication | bool) or
+      ((openssh_pubkey_authentication | bool) and (openssh_service_account_public_keys | length > 0))
+    fail_msg: >-
+      No usable login method: password authentication is disabled and
+      openssh_service_account_public_keys is empty. Add at least one public key
+      (recommended) or set openssh_password_authentication: true.
+    quiet: true
+
+- name: Inspect the target port (listeners, dynamic and excluded ranges)
+  ansible.windows.win_powershell:
+    script: |
+      param([int]$Port)
+      $Ansible.Changed = $false
+      $owners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique |
+        ForEach-Object {
+          $p = Get-Process -Id $_ -ErrorAction SilentlyContinue
+          [PSCustomObject]@{ ProcessId = $_; ProcessName = if ($p) { $p.ProcessName } else { 'unknown' } }
+        })
+      $nums = @(netsh int ipv4 show dynamicport tcp | Select-String '(\d+)\s*$' |
+        ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
+      $dynStart = $nums[0]
+      $dynEnd   = $nums[0] + $nums[1] - 1
+      $excluded = @(netsh int ipv4 show excludedportrange protocol=tcp | ForEach-Object {
+        if ($_ -match '^\s*(\d+)\s+(\d+)') { [PSCustomObject]@{ Start = [int]$Matches[1]; End = [int]$Matches[2] } }
+      } | Where-Object { $Port -ge $_.Start -and $Port -le $_.End })
+      [PSCustomObject]@{
+        Owners     = $owners
+        InDynamic  = ($Port -ge $dynStart -and $Port -le $dynEnd)
+        DynamicRange = "$dynStart-$dynEnd"
+        InExcluded = ($excluded.Count -gt 0)
+      }
+    parameters:
+      Port: "{{ openssh_port | int }}"
+  register: _openssh_port_info
+  changed_when: false
+  check_mode: false
+
+- name: Assert the SSH port is safe to bind at every boot
+  ansible.builtin.assert:
+    that:
+      - _openssh_port_conflicts | length == 0
+      - not (_openssh_port_info.output[0].InDynamic | bool)
+      - not (_openssh_port_info.output[0].InExcluded | bool)
+    fail_msg: >-
+      TCP/{{ openssh_port }} is unsafe:
+      owners={{ _openssh_port_conflicts | map(attribute='ProcessName') | list }},
+      in dynamic range {{ _openssh_port_info.output[0].DynamicRange }}={{ _openssh_port_info.output[0].InDynamic }},
+      in excluded range={{ _openssh_port_info.output[0].InExcluded }}.
+      Ports in the dynamic or excluded ranges can be grabbed before sshd starts at boot.
+    quiet: true
+  vars:
+    _openssh_port_conflicts: "{{ _openssh_port_info.output[0].Owners | default([], true) | rejectattr('ProcessName', 'equalto', 'sshd') | list }}"
+
+- name: Read active network connection profiles
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      Get-NetConnectionProfile | ForEach-Object {
+        [PSCustomObject]@{
+          Interface = $_.InterfaceAlias
+          Category  = ([string]$_.NetworkCategory).ToLower() -replace '^domainauthenticated$', 'domain'
+        }
+      }
+  register: _openssh_net_profiles
+  changed_when: false
+  check_mode: false
+
+- name: Warn if a NIC uses a firewall profile the SSH rule does not cover
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: interface(s) {{ _openssh_uncovered | map(attribute='Interface') | join(', ') }}
+      are on profile(s) {{ _openssh_uncovered | map(attribute='Category') | unique | join(', ') }},
+      but openssh_firewall_profiles = {{ openssh_firewall_profiles }}.
+      SSH will be blocked on those NICs. Set the NIC to Private
+      (Set-NetConnectionProfile -InterfaceAlias '<name>' -NetworkCategory Private)
+      or add the profile to openssh_firewall_profiles.
+  vars:
+    _openssh_uncovered: "{{ _openssh_net_profiles.output | rejectattr('Category', 'in', openssh_firewall_profiles) | list }}"
+  when:
+    - "'any' not in openssh_firewall_profiles"
+    - _openssh_uncovered | length > 0
+
+- name: Warn about production-unsafe settings
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ _openssh_warnings | join(' | ') }}
+  vars:
+    _openssh_warnings: >-
+      {{
+        ([] if openssh_firewall_remote_ips != 'any' else ['firewall allows ANY remote IP - set openssh_firewall_remote_ips'])
+        + ([] if not (openssh_password_authentication | bool) else ['password authentication is enabled - use keys only in production'])
+      }}
+  when: _openssh_warnings | length > 0

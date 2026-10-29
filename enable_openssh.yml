@@ -1,0 +1,14 @@
+---
+# Usage:
+#   ansible-playbook enable_openssh.yml --ask-vault-pass
+#   ansible-playbook enable_openssh.yml --ask-vault-pass --check --diff    # drift report
+#   ansible-playbook enable_openssh.yml --ask-vault-pass -e openssh_batch_size=1
+- name: Enable and harden OpenSSH Server on Windows
+  hosts: windows
+  gather_facts: true
+  # Roll out in batches across a fleet; stop if a batch fails.
+  serial: "{{ openssh_batch_size | default('100%') }}"
+  max_fail_percentage: 0
+  roles:
+    - role: winrm_service_account
+    - role: openssh

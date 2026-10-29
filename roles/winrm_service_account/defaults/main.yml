@@ -1,0 +1,9 @@
+---
+# Fail the play if Ansible is connecting as the built-in Administrator (RID 500).
+# Use the dedicated account created by scripts/Enable-WinRMForAnsible.ps1.
+winrm_service_account_forbid_builtin_admin: true
+
+# The automation account only needs network logons (WinRM). Deny console and
+# RDP logons so the credential can't be used interactively if it leaks.
+winrm_service_account_deny_interactive_logon: true
+winrm_service_account_deny_rdp_logon: true

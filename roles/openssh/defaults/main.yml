@@ -1,0 +1,118 @@
+---
+# =============================================================================
+# Network
+# =============================================================================
+# SSH listen port. Rejected if 22, reserved, in the OS dynamic (ephemeral)
+# range, in a Hyper-V/WinNAT excluded range, or owned by another process.
+openssh_port: 2222
+# Empty list = listen on all interfaces. Example: ['10.0.0.15']
+openssh_listen_addresses: []
+openssh_reserved_ports:
+  [22, 53, 80, 88, 135, 139, 389, 443, 445, 464, 636,
+   3268, 3269, 3389, 5985, 5986, 47001]
+
+# =============================================================================
+# Install
+# =============================================================================
+# capability = Windows Feature on Demand (needs Windows Update / WSUS / FoD source)
+# msi        = Win32-OpenSSH MSI (URL or local/UNC path) - for offline hosts
+openssh_install_method: capability
+openssh_capability_pattern: 'OpenSSH.Server*'
+openssh_msi_url: 'https://github.com/PowerShell/Win32-OpenSSH/releases/download/v9.5.0.0p1-Beta/OpenSSH-Win64-v9.5.0.0.msi'
+openssh_bin_dir_capability: 'C:\Windows\System32\OpenSSH'
+openssh_bin_dir_msi: 'C:\Program Files\OpenSSH'
+openssh_config_dir: 'C:\ProgramData\ssh'
+
+# =============================================================================
+# Service (autostart + crash recovery)
+# =============================================================================
+openssh_service_start_mode: auto     # auto | delayed
+openssh_service_failure_actions:
+  - {type: restart, delay_ms: 5000}
+  - {type: restart, delay_ms: 15000}
+  - {type: restart, delay_ms: 60000}
+openssh_service_failure_reset_sec: 86400
+
+# =============================================================================
+# SSH service account (the ONLY identity allowed to log in over SSH)
+# =============================================================================
+# local  = account is created/managed by this role
+# domain = account must already exist in AD (NetBIOS domain in *_domain)
+openssh_service_account_type: local
+openssh_service_account_name: svc_ssh
+openssh_service_account_domain: ''
+openssh_service_account_description: 'SSH service account. Managed by Ansible - non-admin, key-based login only.'
+# Local accounts only. Store in vault. Never used for SSH when password auth is off,
+# but Windows requires one. Must satisfy the local password policy.
+openssh_service_account_password: ''
+openssh_service_account_update_password: on_create   # on_create | always (rotation)
+# Public keys allowed to authenticate as the service account. Options such as
+# from="10.0.0.0/8" may prefix each key to pin source networks.
+openssh_service_account_public_keys: []
+# Keys are stored centrally (admin-managed, not writable by the account).
+openssh_service_account_keys_file: 'service_account_authorized_keys'
+# Deny RDP logons for the SSH account (SSH-only identity).
+openssh_service_account_deny_rdp: true
+
+# Local group gating SSH access (AllowGroups). Membership is enforced to be
+# EXACTLY the service account - anyone else added manually is removed.
+openssh_access_group: 'OpenSSH-Users'
+# Explicitly deny local Administrators over SSH (defense in depth).
+openssh_deny_administrators: true
+
+# =============================================================================
+# Authentication & session hardening
+# =============================================================================
+openssh_pubkey_authentication: true
+openssh_password_authentication: false   # true only for lab testing
+openssh_max_auth_tries: 3
+openssh_max_sessions: 5
+openssh_max_startups: '10:30:60'
+openssh_login_grace_time: 30
+openssh_client_alive_interval: 300
+openssh_client_alive_count_max: 2
+openssh_log_level: VERBOSE               # logs key fingerprints on login
+openssh_allow_tcp_forwarding: false
+openssh_banner_text: |
+  Authorized access only. All activity may be monitored and recorded.
+
+# =============================================================================
+# Cryptography (compatible with OpenSSH 7.7+ shipped on Server 2019)
+# =============================================================================
+openssh_host_key_types: [ed25519, ecdsa, rsa]
+openssh_ciphers:
+  - chacha20-poly1305@openssh.com
+  - aes256-gcm@openssh.com
+  - aes128-gcm@openssh.com
+  - aes256-ctr
+  - aes192-ctr
+  - aes128-ctr
+openssh_kex_algorithms:
+  - curve25519-sha256
+  - curve25519-sha256@libssh.org
+  - diffie-hellman-group16-sha512
+  - diffie-hellman-group18-sha512
+  - diffie-hellman-group-exchange-sha256
+openssh_macs:
+  - hmac-sha2-512-etm@openssh.com
+  - hmac-sha2-256-etm@openssh.com
+  - umac-128-etm@openssh.com
+
+# =============================================================================
+# Default shell for SSH sessions ('' = remove override, Windows uses cmd.exe)
+# =============================================================================
+openssh_default_shell: 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+
+# =============================================================================
+# Firewall
+# =============================================================================
+openssh_firewall_rule_name: 'OpenSSH-Server-In-TCP-Ansible'
+openssh_firewall_group: 'OpenSSH Server (Ansible)'
+openssh_firewall_profiles: [domain, private]   # add 'public' only if required
+openssh_firewall_remote_ips: any               # restrict in production
+openssh_disable_default_port22_rule: true
+
+# =============================================================================
+# Verification
+# =============================================================================
+openssh_verify_from_controller: true

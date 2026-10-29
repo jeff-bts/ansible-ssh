@@ -1,0 +1,33 @@
+---
+# ---------------------------------------------------------------------------
+# WinRM connection (HTTPS/5986 + NTLM) as the dedicated Ansible service
+# account (svc_ansible) - never the built-in Administrator.
+# ---------------------------------------------------------------------------
+ansible_connection: winrm
+ansible_port: 5986
+ansible_winrm_scheme: https
+ansible_winrm_transport: ntlm          # use 'kerberos' for domain accounts
+ansible_winrm_server_cert_validation: validate
+# ansible_winrm_ca_trust_path: /etc/pki/ca-trust/source/anchors/corp-ca.pem
+ansible_user: "{{ vault_ansible_user }}"
+ansible_password: "{{ vault_ansible_password }}"
+
+# ---------------------------------------------------------------------------
+# openssh role overrides (full list: roles/openssh/defaults/main.yml)
+# ---------------------------------------------------------------------------
+openssh_port: 2222                     # anything except 22 (enforced)
+openssh_service_start_mode: auto       # auto | delayed -> starts on boot
+openssh_firewall_profiles: [domain, private]
+openssh_firewall_remote_ips: any       # e.g. "10.0.0.0/8,192.168.1.0/24"
+
+# SSH service account - the ONLY identity allowed in over SSH (non-admin).
+openssh_service_account_type: local    # local | domain
+openssh_service_account_name: svc_ssh
+openssh_service_account_domain: ''     # NetBIOS name when type=domain, e.g. CORP
+openssh_service_account_password: "{{ vault_openssh_service_account_password | default('') }}"
+
+# Key-only login (production default). Paste the PUBLIC key(s) here.
+openssh_password_authentication: false
+openssh_service_account_public_keys: []
+#  - "ssh-ed25519 AAAAC3Nza... ops@workstation"
+#  - 'from="10.0.0.0/8" ssh-ed25519 AAAAC3Nza... ci@runner'

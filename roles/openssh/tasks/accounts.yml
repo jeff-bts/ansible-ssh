@@ -1,0 +1,134 @@
+---
+# -----------------------------------------------------------------------------
+# Identity
+# -----------------------------------------------------------------------------
+- name: Build the service account principal name
+  ansible.builtin.set_fact:
+    _openssh_principal: '{{ (openssh_service_account_domain ~ "\\" ~ openssh_service_account_name) if openssh_service_account_type == "domain" else openssh_service_account_name }}'
+  tags: [always]
+
+- name: Ensure the local SSH service account exists
+  ansible.windows.win_user:
+    name: "{{ openssh_service_account_name }}"
+    fullname: SSH Service Account
+    description: "{{ openssh_service_account_description }}"
+    password: "{{ openssh_service_account_password }}"
+    update_password: "{{ openssh_service_account_update_password }}"
+    password_never_expires: true       # expiry would silently break key logins
+    user_cannot_change_password: true
+    account_disabled: false
+    state: present
+  no_log: true
+  when: openssh_service_account_type == 'local'
+
+- name: Resolve service account SID and check Administrators membership
+  ansible.windows.win_powershell:
+    script: |
+      param([string]$Principal, [string]$AccountType)
+      $Ansible.Changed = $false
+      $lookup = if ($AccountType -eq 'local') { "$env:COMPUTERNAME\$Principal" } else { $Principal }
+      try {
+        $sid = (New-Object Security.Principal.NTAccount($lookup)).Translate([Security.Principal.SecurityIdentifier]).Value
+      } catch {
+        return [PSCustomObject]@{ Exists = $false; Sid = $null; IsAdmin = $false }
+      }
+      # Locale-independent Administrators lookup; ADSI avoids the
+      # Get-LocalGroupMember orphaned-SID bug.
+      $adminName = (New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')).Translate(
+        [Security.Principal.NTAccount]).Value.Split('\')[-1]
+      $group = [ADSI]"WinNT://$env:COMPUTERNAME/$adminName,group"
+      $memberSids = @($group.psbase.Invoke('Members') | ForEach-Object {
+        $bytes = $_.GetType().InvokeMember('objectSid', 'GetProperty', $null, $_, $null)
+        (New-Object Security.Principal.SecurityIdentifier($bytes, 0)).Value
+      })
+      [PSCustomObject]@{ Exists = $true; Sid = $sid; IsAdmin = ($memberSids -contains $sid) }
+    parameters:
+      Principal: "{{ _openssh_principal }}"
+      AccountType: "{{ openssh_service_account_type }}"
+  register: _openssh_account
+  changed_when: false
+  check_mode: false
+
+- name: Assert the service account exists
+  ansible.builtin.assert:
+    that: (_openssh_account.output[0].Exists | bool) or ansible_check_mode
+    fail_msg: >-
+      Service account '{{ _openssh_principal }}' was not found.
+      {{ 'Pre-create it in Active Directory.' if openssh_service_account_type == 'domain' else '' }}
+    quiet: true
+
+- name: Assert the service account is NOT a local administrator (least privilege)
+  ansible.builtin.assert:
+    that: not (_openssh_account.output[0].IsAdmin | bool)
+    fail_msg: >-
+      '{{ _openssh_principal }}' is a direct member of the local Administrators
+      group. The SSH service account must be a standard user - remove it from
+      Administrators and re-run.
+    quiet: true
+
+# -----------------------------------------------------------------------------
+# Access group - the only way in over SSH (sshd AllowGroups)
+# -----------------------------------------------------------------------------
+- name: Ensure the SSH access group exists
+  ansible.windows.win_group:
+    name: "{{ openssh_access_group }}"
+    description: Members may log in over OpenSSH. Membership is enforced by Ansible.
+    state: present
+
+# SIDs are used (not names) so a local account can never be confused with a
+# same-named domain account on domain-joined servers.
+- name: Restrict SSH access group membership to the service account only
+  ansible.windows.win_group_membership:
+    name: "{{ openssh_access_group }}"
+    members: ["{{ _openssh_account.output[0].Sid }}"]
+    state: pure
+  when: _openssh_account.output[0].Exists | bool
+
+- name: Deny RDP logon for the SSH service account
+  ansible.windows.win_user_right:
+    name: SeDenyRemoteInteractiveLogonRight
+    users: ["{{ _openssh_account.output[0].Sid }}"]
+    action: add
+  when:
+    - openssh_service_account_deny_rdp | bool
+    - _openssh_account.output[0].Exists | bool
+
+# -----------------------------------------------------------------------------
+# Centrally managed authorized_keys (admins write, account can only read)
+# -----------------------------------------------------------------------------
+- name: Write service account authorized_keys
+  ansible.windows.win_copy:
+    content: |
+      {% for key in openssh_service_account_public_keys %}
+      {{ key }}
+      {% endfor %}
+    dest: "{{ openssh_config_dir }}\\{{ openssh_service_account_keys_file }}"
+
+# sshd rejects key files writable by anyone other than SYSTEM, Administrators
+# or the user. Enforce an exact DACL (no inheritance, no stray ACEs).
+- name: Enforce exact ACL on authorized_keys
+  ansible.windows.win_powershell:
+    script: |
+      [CmdletBinding(SupportsShouldProcess)]
+      param([string]$Path, [string]$ReaderSid)
+      $Ansible.Changed = $false
+      if (-not (Test-Path -LiteralPath $Path)) { $Ansible.Changed = $true; return }
+      $acl = New-Object System.Security.AccessControl.FileSecurity
+      $acl.SetAccessRuleProtection($true, $false)
+      $acl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
+      foreach ($s in 'S-1-5-18', 'S-1-5-32-544') {
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+          [Security.Principal.SecurityIdentifier]$s, 'FullControl', 'Allow')))
+      }
+      $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+        [Security.Principal.SecurityIdentifier]$ReaderSid, 'Read', 'Allow')))
+      $desired = $acl.GetSecurityDescriptorSddlForm('Owner, Access')
+      $current = (Get-Acl -LiteralPath $Path).GetSecurityDescriptorSddlForm('Owner, Access')
+      if ($current -ne $desired) {
+        if ($PSCmdlet.ShouldProcess($Path, 'Set ACL')) { Set-Acl -LiteralPath $Path -AclObject $acl }
+        $Ansible.Changed = $true
+      }
+    parameters:
+      Path: "{{ openssh_config_dir }}\\{{ openssh_service_account_keys_file }}"
+      ReaderSid: "{{ _openssh_account.output[0].Sid }}"
+  when: _openssh_account.output[0].Exists | bool

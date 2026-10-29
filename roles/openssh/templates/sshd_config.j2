@@ -1,0 +1,61 @@
+# {{ ansible_managed }}
+# Managed by Ansible role "openssh" - manual edits will be overwritten.
+# Validated with `sshd -t` before being put into service.
+
+# ---------------------------------------------------------------- Network ---
+Port {{ openssh_port }}
+AddressFamily any
+{% for addr in openssh_listen_addresses %}
+ListenAddress {{ addr }}
+{% endfor %}
+
+# -------------------------------------------------------------- Host keys ---
+{% for kt in openssh_host_key_types %}
+HostKey __PROGRAMDATA__/ssh/ssh_host_{{ kt }}_key
+{% endfor %}
+
+# ----------------------------------------------------------- Cryptography ---
+Ciphers {{ openssh_ciphers | join(',') }}
+KexAlgorithms {{ openssh_kex_algorithms | join(',') }}
+MACs {{ openssh_macs | join(',') }}
+
+# ---------------------------------------------------------------- Logging ---
+# Event Viewer: Applications and Services Logs > OpenSSH > Operational
+LogLevel {{ openssh_log_level }}
+
+# --------------------------------------------------------- Authentication ---
+LoginGraceTime {{ openssh_login_grace_time }}
+MaxAuthTries {{ openssh_max_auth_tries }}
+MaxSessions {{ openssh_max_sessions }}
+MaxStartups {{ openssh_max_startups }}
+PubkeyAuthentication {{ 'yes' if openssh_pubkey_authentication | bool else 'no' }}
+PasswordAuthentication {{ 'yes' if openssh_password_authentication | bool else 'no' }}
+PermitEmptyPasswords no
+# Per-user key files are disabled; keys are managed centrally (see Match below).
+AuthorizedKeysFile none
+
+# ---------------------------------------------------------------- Session ---
+AllowTcpForwarding {{ 'yes' if openssh_allow_tcp_forwarding | bool else 'no' }}
+AllowAgentForwarding no
+GatewayPorts no
+ClientAliveInterval {{ openssh_client_alive_interval }}
+ClientAliveCountMax {{ openssh_client_alive_count_max }}
+{% if openssh_banner_text | length > 0 %}
+Banner {{ openssh_config_dir | replace('\\', '/') }}/banner.txt
+{% endif %}
+
+# --------------------------------------------------------- Access control ---
+# Only members of the access group may log in. Ansible enforces that the
+# group contains exactly one member: the SSH service account.
+{% if openssh_deny_administrators | bool %}
+DenyGroups administrators
+{% endif %}
+AllowGroups {{ openssh_access_group | lower }}
+
+# ------------------------------------------------------------- Subsystems ---
+Subsystem sftp sftp-server.exe
+
+# ------------------------------------------------ Service account keys -----
+# Admin-owned, read-only for the account - it cannot add its own keys.
+Match Group {{ openssh_access_group | lower }}
+    AuthorizedKeysFile __PROGRAMDATA__/ssh/{{ openssh_service_account_keys_file }}

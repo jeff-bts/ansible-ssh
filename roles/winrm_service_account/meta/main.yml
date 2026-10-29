@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: winrm_service_account
+  author: Byte Tech Solutions
+  description: Enforce and harden a dedicated (non built-in) Ansible WinRM service account.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Windows
+      versions: [all]
+  galaxy_tags: [windows, winrm, hardening]
+
+dependencies: []

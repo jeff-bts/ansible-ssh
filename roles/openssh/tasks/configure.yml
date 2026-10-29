@@ -1,0 +1,100 @@
+---
+# -----------------------------------------------------------------------------
+# Host keys - sshd generates them (with correct ACLs) on its first start.
+# The vendor TCP/22 firewall rule is already disabled at this point.
+# -----------------------------------------------------------------------------
+- name: Check for existing host keys
+  ansible.windows.win_stat:
+    path: "{{ openssh_config_dir }}\\ssh_host_ed25519_key"
+  register: _openssh_hostkey
+
+- name: Generate host keys via first sshd start
+  when:
+    - not _openssh_hostkey.stat.exists
+    - not ansible_check_mode
+  block:
+    - name: Start sshd once to generate host keys
+      ansible.windows.win_service:
+        name: sshd
+        start_mode: "{{ openssh_service_start_mode }}"   # Server 2025 ships it Disabled
+        state: started
+
+    - name: Wait for host key generation
+      ansible.windows.win_wait_for:
+        path: "{{ openssh_config_dir }}\\ssh_host_ed25519_key"
+        timeout: 60
+
+    - name: Stop sshd until the hardened config is in place
+      ansible.windows.win_service:
+        name: sshd
+        state: stopped
+
+# -----------------------------------------------------------------------------
+# Supporting files / settings
+# -----------------------------------------------------------------------------
+- name: Deploy pre-authentication banner
+  ansible.windows.win_copy:
+    content: "{{ openssh_banner_text }}"
+    dest: "{{ openssh_config_dir }}\\banner.txt"
+  register: _openssh_banner
+  when: openssh_banner_text | length > 0
+
+- name: Check the default shell exists
+  ansible.windows.win_stat:
+    path: "{{ openssh_default_shell }}"
+  register: _openssh_shell_stat
+  when: openssh_default_shell | length > 0
+
+- name: Assert the default shell exists (a bad path breaks every SSH session)
+  ansible.builtin.assert:
+    that: _openssh_shell_stat.stat.exists
+    fail_msg: "openssh_default_shell '{{ openssh_default_shell }}' does not exist on the host."
+    quiet: true
+  when: openssh_default_shell | length > 0
+
+- name: Manage the SSH default shell
+  ansible.windows.win_regedit:
+    path: 'HKLM:\SOFTWARE\OpenSSH'
+    name: DefaultShell
+    data: "{{ openssh_default_shell if openssh_default_shell | length > 0 else omit }}"
+    type: string
+    state: "{{ 'present' if openssh_default_shell | length > 0 else 'absent' }}"
+
+# -----------------------------------------------------------------------------
+# sshd_config: render -> validate -> promote (live file is only replaced by a
+# config that passed `sshd -t`; the previous one is kept as a backup)
+# -----------------------------------------------------------------------------
+- name: Render sshd_config to a staging file
+  ansible.windows.win_template:
+    src: sshd_config.j2
+    dest: "{{ openssh_config_dir }}\\sshd_config.ansible-staged"
+  when: not ansible_check_mode
+
+- name: Validate staged sshd_config
+  ansible.windows.win_command:
+    argv:
+      - "{{ _openssh_bin_dir }}\\sshd.exe"
+      - -t
+      - -f
+      - "{{ openssh_config_dir }}\\sshd_config.ansible-staged"
+  register: _openssh_validate
+  changed_when: false
+  failed_when: _openssh_validate.rc != 0
+  when: not ansible_check_mode
+
+- name: Promote validated sshd_config into place
+  ansible.windows.win_copy:
+    src: "{{ openssh_config_dir }}\\sshd_config.ansible-staged"
+    dest: "{{ openssh_config_dir }}\\sshd_config"
+    remote_src: true
+    backup: true
+  register: _openssh_config_promote
+  when: not ansible_check_mode
+
+# Check mode: show what would change in the live config (drift detection).
+- name: Preview sshd_config changes
+  ansible.windows.win_template:
+    src: sshd_config.j2
+    dest: "{{ openssh_config_dir }}\\sshd_config"
+  register: _openssh_config_preview
+  when: ansible_check_mode

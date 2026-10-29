@@ -1,0 +1,38 @@
+---
+- name: Ensure sshd is NOT listening on TCP/22
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      $ids = @(Get-Process -Name sshd -ErrorAction SilentlyContinue | ForEach-Object Id)
+      @(Get-NetTCPConnection -State Listen -LocalPort 22 -ErrorAction SilentlyContinue |
+        Where-Object { $ids -contains $_.OwningProcess }).Count
+  register: _openssh_p22
+  changed_when: false
+  failed_when: (_openssh_p22.output[0] | int) > 0
+
+- name: Read final sshd service state
+  ansible.windows.win_service:
+    name: sshd
+  register: _openssh_final
+
+- name: Assert sshd is running and starts on boot
+  ansible.builtin.assert:
+    that:
+      - _openssh_final.state == 'running'
+      - _openssh_final.start_mode in ['auto', 'delayed']
+    success_msg: "sshd {{ _openssh_final.state }}, start_mode={{ _openssh_final.start_mode }}"
+
+- name: Verify the SSH banner is reachable from the control node
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host | default(inventory_hostname) }}"
+    port: "{{ openssh_port | int }}"
+    search_regex: OpenSSH
+    timeout: 30
+  delegate_to: localhost
+  when: openssh_verify_from_controller | bool
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      OpenSSH is enabled on {{ inventory_hostname }} for '{{ _openssh_principal }}' only.
+      Connect with: ssh -p {{ openssh_port }} {{ _openssh_principal }}@{{ ansible_host | default(inventory_hostname) }}

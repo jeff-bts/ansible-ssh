@@ -1,0 +1,90 @@
+---
+# Proves "autostart on boot": reboots the server, then checks that sshd came
+# back by itself on the custom port and that nothing listens on TCP/22.
+# Hosts are rebooted ONE AT A TIME.
+#
+# Usage:
+#   ansible-playbook verify_openssh.yml --ask-vault-pass
+#   ansible-playbook verify_openssh.yml --ask-vault-pass -e verify_reboot=false
+- name: Verify OpenSSH autostart after reboot
+  hosts: windows
+  gather_facts: false
+  serial: 1
+  max_fail_percentage: 0
+  vars:
+    verify_reboot: true
+    verify_from_controller: true
+    verify_port: "{{ openssh_port | default(2222) }}"
+
+  tasks:
+    - name: Record boot time before reboot
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')
+      register: verify_boot_before
+      changed_when: false
+
+    - name: Reboot the server
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+        post_reboot_delay: 15
+      when: verify_reboot | bool
+
+    - name: Record boot time after reboot
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')
+      register: verify_boot_after
+      changed_when: false
+
+    - name: Assert the host actually rebooted
+      ansible.builtin.assert:
+        that: verify_boot_after.output[0] != verify_boot_before.output[0]
+        fail_msg: "LastBootUpTime did not change - the reboot did not happen."
+      when: verify_reboot | bool
+
+    - name: Wait for sshd to listen on its port without manual start
+      ansible.windows.win_wait_for:
+        port: "{{ verify_port | int }}"
+        timeout: 300
+
+    - name: Read sshd service state
+      ansible.windows.win_service:
+        name: sshd
+      register: verify_svc
+
+    - name: Assert sshd is running and configured to start at boot
+      ansible.builtin.assert:
+        that:
+          - verify_svc.exists
+          - verify_svc.state == 'running'
+          - verify_svc.start_mode in ['auto', 'delayed']
+        success_msg: "sshd is {{ verify_svc.state }} (start_mode={{ verify_svc.start_mode }})"
+
+    - name: Assert sshd is NOT listening on TCP/22
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $ids = @(Get-Process -Name sshd -ErrorAction SilentlyContinue | ForEach-Object Id)
+          @(Get-NetTCPConnection -State Listen -LocalPort 22 -ErrorAction SilentlyContinue |
+            Where-Object { $ids -contains $_.OwningProcess }).Count
+      register: verify_p22
+      changed_when: false
+      failed_when: (verify_p22.output[0] | int) > 0
+
+    - name: Confirm SSH banner is reachable from the control node
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: "{{ verify_port | int }}"
+        search_regex: OpenSSH
+        timeout: 60
+      delegate_to: localhost
+      when: verify_from_controller | bool
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          PASS - {{ inventory_hostname }} booted at {{ verify_boot_after.output[0] }} (UTC)
+          and sshd auto-started on TCP/{{ verify_port }}.

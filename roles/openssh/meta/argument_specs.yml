@@ -1,0 +1,53 @@
+---
+argument_specs:
+  main:
+    short_description: Install, harden and autostart OpenSSH Server on Windows on a non-22 port.
+    options:
+      openssh_port: {type: int, default: 2222, description: SSH listen port (never 22).}
+      openssh_listen_addresses: {type: list, elements: str, default: [], description: ListenAddress entries; empty = all.}
+      openssh_reserved_ports: {type: list, elements: int, description: Ports that may not be used.}
+      openssh_install_method: {type: str, choices: [capability, msi], default: capability, description: Install source.}
+      openssh_capability_pattern: {type: str, description: Windows capability name pattern.}
+      openssh_msi_url: {type: str, description: Win32-OpenSSH MSI URL or local/UNC path.}
+      openssh_bin_dir_capability: {type: str, description: sshd.exe directory for capability installs.}
+      openssh_bin_dir_msi: {type: str, description: sshd.exe directory for MSI installs.}
+      openssh_config_dir: {type: str, description: OpenSSH ProgramData directory.}
+      openssh_service_start_mode: {type: str, choices: [auto, delayed], default: auto, description: Boot start mode.}
+      openssh_service_failure_actions: {type: list, elements: dict, description: SCM recovery actions.}
+      openssh_service_failure_reset_sec: {type: int, description: SCM failure counter reset period.}
+      openssh_service_account_type: {type: str, choices: [local, domain], default: local, description: Service account source.}
+      openssh_service_account_name: {type: str, default: svc_ssh, description: Service account sAMAccountName.}
+      openssh_service_account_domain: {type: str, default: '', description: NetBIOS domain (domain type only).}
+      openssh_service_account_description: {type: str, description: Local account description.}
+      openssh_service_account_password: {type: str, default: '', no_log: true, description: Local account password (vault).}
+      openssh_service_account_update_password: {type: str, choices: [on_create, always], default: on_create, description: Password update policy.}
+      openssh_service_account_public_keys: {type: list, elements: str, default: [], description: Authorized public keys.}
+      openssh_service_account_keys_file: {type: str, description: Central authorized_keys filename under the config dir.}
+      openssh_service_account_deny_rdp: {type: bool, default: true, description: Deny RDP logon for the SSH account.}
+      openssh_access_group: {type: str, default: OpenSSH-Users, description: Local group gating SSH access.}
+      openssh_deny_administrators: {type: bool, default: true, description: DenyGroups administrators.}
+      openssh_pubkey_authentication: {type: bool, default: true, description: Allow public key auth.}
+      openssh_password_authentication: {type: bool, default: false, description: Allow password auth.}
+      openssh_max_auth_tries: {type: int, description: MaxAuthTries.}
+      openssh_max_sessions: {type: int, description: MaxSessions.}
+      openssh_max_startups: {type: str, description: MaxStartups.}
+      openssh_login_grace_time: {type: int, description: LoginGraceTime (seconds).}
+      openssh_client_alive_interval: {type: int, description: ClientAliveInterval (seconds).}
+      openssh_client_alive_count_max: {type: int, description: ClientAliveCountMax.}
+      openssh_log_level:
+        type: str
+        choices: [QUIET, FATAL, ERROR, INFO, VERBOSE, DEBUG, DEBUG1, DEBUG2, DEBUG3]
+        description: sshd LogLevel.
+      openssh_allow_tcp_forwarding: {type: bool, description: AllowTcpForwarding.}
+      openssh_banner_text: {type: str, description: Pre-auth banner; empty disables.}
+      openssh_host_key_types: {type: list, elements: str, description: Host key types to load.}
+      openssh_ciphers: {type: list, elements: str, description: Allowed ciphers.}
+      openssh_kex_algorithms: {type: list, elements: str, description: Allowed KEX algorithms.}
+      openssh_macs: {type: list, elements: str, description: Allowed MACs.}
+      openssh_default_shell: {type: str, description: DefaultShell registry value; empty removes it.}
+      openssh_firewall_rule_name: {type: str, description: Managed firewall rule display name.}
+      openssh_firewall_group: {type: str, description: Managed firewall rule group.}
+      openssh_firewall_profiles: {type: list, elements: str, description: Firewall profiles (domain/private/public/any).}
+      openssh_firewall_remote_ips: {type: str, description: Allowed remote IPs/CIDRs or 'any'.}
+      openssh_disable_default_port22_rule: {type: bool, description: Disable vendor TCP/22 rules.}
+      openssh_verify_from_controller: {type: bool, description: Check the SSH banner from the controller.}
